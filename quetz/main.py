@@ -1035,7 +1035,7 @@ def copy_package(
     tags=["channels"],
 )
 def get_channel_members(
-    channel: db_models.Channel = Depends(get_channel_or_fail),
+    channel: db_models.Channel = Depends(get_channel_allow_proxy),
     dao: Dao = Depends(get_dao),
     auth: authorization.Rules = Depends(get_rules),
 ):
@@ -1048,7 +1048,7 @@ def get_channel_members(
 @api_router.post("/channels/{channel_name}/members", status_code=201, tags=["channels"])
 def post_channel_member(
     new_member: rest_models.PostMember,
-    channel: db_models.Channel = Depends(get_channel_or_fail),
+    channel: db_models.Channel = Depends(get_channel_allow_proxy),
     dao: Dao = Depends(get_dao),
     db=Depends(get_db),
     auth: authorization.Rules = Depends(get_rules),
@@ -1074,7 +1074,7 @@ def post_channel_member(
 @api_router.delete("/channels/{channel_name}/members", tags=["channels"])
 def delete_channel_member(
     username: str,
-    channel: db_models.Channel = Depends(get_channel_or_fail),
+    channel: db_models.Channel = Depends(get_channel_allow_proxy),
     dao: Dao = Depends(get_dao),
     db=Depends(get_db),
     auth: authorization.Rules = Depends(get_rules),
