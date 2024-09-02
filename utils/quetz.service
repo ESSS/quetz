@@ -1,0 +1,12 @@
+[Unit]
+Description=quetz service
+[Service]
+WorkingDirectory=/home/user
+Type=simple
+User=user
+RestartSec=10
+ExecStart=/home/user/start_quetz.sh
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target
+
