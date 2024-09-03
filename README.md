@@ -36,7 +36,7 @@ You should have [mamba](https://github.com/mamba-org/mamba) or conda installed.
 Get `Quetz` sources:
 
 ```bash
-git clone https://github.com/mamba-org/quetz.git
+git clone https://github.com/ESSS/quetz.git
 ```
 
 Then create an environment:
