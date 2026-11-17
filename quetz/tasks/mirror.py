@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import shutil
+import time
 from concurrent.futures import ThreadPoolExecutor
 from http.client import IncompleteRead
 from tempfile import SpooledTemporaryFile
@@ -48,6 +49,9 @@ KNOWN_SUBDIRS = (
 
 logger = logging.getLogger("quetz")
 
+# max seconds a request waits for another request downloading the same file
+DOWNLOAD_LOCK_WAIT_TIMEOUT = 120
+
 
 class RemoteRepository:
     """Resource object for external package repositories."""
@@ -76,13 +80,17 @@ class RemoteFile:
         else:
             session_as_param = True
         remote_url = os.path.join(host, path)
+        logger.debug(f"GET {remote_url}")
         try:
             response = session.get(remote_url, stream=True)
-        except requests.ConnectionError:
+        except requests.RequestException as e:
+            logger.warning(f"Request to {remote_url} failed: {e!r}")
             raise RemoteServerError
+        logger.debug(f"GET {remote_url} -> {response.status_code}")
         if response.status_code == 404:
             raise RemoteFileNotFound
         elif response.status_code != 200:
+            logger.warning(f"Unexpected status {response.status_code} for {remote_url}")
             raise RemoteServerError
         self.file = SpooledTemporaryFile()
         response.raw.decode_content = True  # for gzipped response content
@@ -111,26 +119,53 @@ def download_remote_file(
 ):
     """Download a file from a remote repository to a package store"""
 
-    # Check if a download is already underway for this file
-    lock = pkgstore.get_download_lock(channel, path)
-    if lock:
-        # Wait for the download to complete
-        lock.acquire()
+    # Atomically check whether a download is already underway for this file
+    lock, is_owner = pkgstore.acquire_download_lock(channel, path)
+    if not is_owner:
+        logger.debug(f"Waiting for concurrent download of {channel}/{path}")
+        started = time.monotonic()
+        # Wait (bounded) for the download to complete
+        if not lock.acquire(timeout=DOWNLOAD_LOCK_WAIT_TIMEOUT):
+            logger.warning(
+                f"Timed out after {DOWNLOAD_LOCK_WAIT_TIMEOUT}s waiting for "
+                f"concurrent download of {channel}/{path}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail=f"Timed out waiting for download of {channel}/{path}",
+            )
         # Release the lock so that any other clients can also finish
         lock.release()
+        logger.debug(
+            f"Concurrent download of {channel}/{path} finished after "
+            f"{time.monotonic() - started:.2f}s"
+        )
         return
-    # Acquire a lock to prevent multiple concurrent downloads of the same file
-    with pkgstore.create_download_lock(channel, path):
+
+    # We own the lock: always remove it, even if the download fails, otherwise
+    # waiters return immediately and later requests never retry the download.
+    try:
+        started = time.monotonic()
         logger.debug(f"Downloading {path} from {channel} to pkgstore")
         remote_file = repository.open(path)
+        logger.debug(
+            f"Fetched {channel}/{path} from remote in "
+            f"{time.monotonic() - started:.2f}s, storing in pkgstore"
+        )
         data_stream = remote_file.file
 
         if path.endswith(".json"):
             add_static_file(data_stream.read(), channel, None, path, pkgstore)
         else:
             pkgstore.add_package(data_stream, channel, path)
-
-    pkgstore.delete_download_lock(channel, path)
+        logger.debug(
+            f"Downloaded {channel}/{path} in {time.monotonic() - started:.2f}s"
+        )
+    except Exception:
+        logger.warning(f"Failed to download {channel}/{path}", exc_info=True)
+        raise
+    finally:
+        pkgstore.release_download_lock(channel, path)
 
 
 @contextlib.contextmanager
