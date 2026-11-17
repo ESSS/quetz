@@ -1378,3 +1378,50 @@ def test_handle_repodata_package_with_plugin(
     )
 
     assert plugin.about["conda_version"] == "4.8.4"
+
+
+def test_download_lock_released_on_failure(config):
+    """A failed download must not leave a stale lock behind."""
+    from quetz.tasks.mirror import (
+        RemoteRepository,
+        RemoteServerError,
+        download_remote_file,
+    )
+
+    pkgstore = config.get_package_store()
+
+    class FailingRepository(RemoteRepository):
+        def __init__(self):
+            self.calls = 0
+
+        def open(self, path):
+            self.calls += 1
+            raise RemoteServerError
+
+    repo = FailingRepository()
+    for _ in range(2):
+        with pytest.raises(RemoteServerError):
+            download_remote_file(repo, pkgstore, "chan", "file.txt")
+        assert pkgstore.get_download_lock("chan", "file.txt") is None
+
+    # the second request retried the download instead of silently returning
+    assert repo.calls == 2
+
+
+def test_download_lock_wait_timeout(config, monkeypatch):
+    """Waiters must not block forever on a stuck download."""
+    from fastapi import HTTPException
+
+    from quetz.tasks import mirror
+
+    pkgstore = config.get_package_store()
+    _, is_owner = pkgstore.acquire_download_lock("chan", "file.txt")
+    assert is_owner
+
+    monkeypatch.setattr(mirror, "DOWNLOAD_LOCK_WAIT_TIMEOUT", 0.1)
+    with pytest.raises(HTTPException) as exc:
+        mirror.download_remote_file(MagicMock(), pkgstore, "chan", "file.txt")
+    assert exc.value.status_code == 504
+
+    pkgstore.release_download_lock("chan", "file.txt")
+    assert pkgstore.get_download_lock("chan", "file.txt") is None

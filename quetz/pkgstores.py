@@ -45,16 +45,48 @@ logger = logging.getLogger("quetz")
 class PackageStore(abc.ABC):
     def __init__(self):
         self._download_locks = {}
+        # protects check-then-set operations on ``_download_locks``
+        self._download_locks_mutex = Lock()
 
     def get_download_lock(self, channel: str, destination: str):
-        return self._download_locks.get((channel, destination))
+        with self._download_locks_mutex:
+            return self._download_locks.get((channel, destination))
 
     def create_download_lock(self, channel: str, destination: str):
-        lock = self._download_locks[(channel, destination)] = Lock()
+        lock = Lock()
+        with self._download_locks_mutex:
+            self._download_locks[(channel, destination)] = lock
         return lock
 
     def delete_download_lock(self, channel: str, destination: str):
-        del self._download_locks[(channel, destination)]
+        with self._download_locks_mutex:
+            self._download_locks.pop((channel, destination), None)
+
+    def acquire_download_lock(self, channel: str, destination: str):
+        """Atomically get the download lock for a file.
+
+        Returns ``(lock, is_owner)``. If ``is_owner`` is True the caller created
+        the lock, already holds it, and must call ``release_download_lock``
+        (in a ``finally`` block) when done. Otherwise another thread is
+        downloading the file and the caller may wait on ``lock``.
+        """
+        key = (channel, destination)
+        with self._download_locks_mutex:
+            lock = self._download_locks.get(key)
+            if lock is not None:
+                return lock, False
+            lock = Lock()
+            lock.acquire()
+            self._download_locks[key] = lock
+            return lock, True
+
+    def release_download_lock(self, channel: str, destination: str):
+        """Remove the lock created by ``acquire_download_lock`` and wake waiters."""
+        key = (channel, destination)
+        with self._download_locks_mutex:
+            lock = self._download_locks.pop(key, None)
+        if lock is not None and lock.locked():
+            lock.release()
 
     @property
     def kind(self):
