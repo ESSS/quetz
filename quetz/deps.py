@@ -10,7 +10,7 @@ from requests.adapters import HTTPAdapter
 from sqlalchemy.orm import Session
 from urllib3.util.retry import Retry
 
-from quetz import authorization, db_models
+from quetz import authorization, db_models, watchdog
 from quetz.config import Config
 from quetz.dao import Dao
 from quetz.database import get_session as get_db_session
@@ -18,6 +18,7 @@ from quetz.tasks.common import Task
 
 DEFAULT_TIMEOUT = 5  # seconds
 MAX_RETRIES = 3
+SLOW_SESSION_SECONDS = 30  # warn when a request holds a DB session this long
 
 logger = logging.getLogger("quetz")
 
@@ -52,10 +53,14 @@ def get_db(config: Config = Depends(get_config)):
             max_overflow=config.sqlalchemy_postgres_max_overflow,
         ),
     )
+    watchdog.session_opened(db)
     try:
         yield db
     finally:
         db.close()
+        held = watchdog.session_closed(db)
+        if held is not None and held > SLOW_SESSION_SECONDS:
+            logger.warning("db session was held for %.1fs", held)
         if logger.isEnabledFor(logging.DEBUG):
             try:
                 logger.debug("db session closed: %s", db.get_bind().pool.status())

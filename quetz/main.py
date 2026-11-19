@@ -56,6 +56,7 @@ from quetz import (
     frontend,
     metrics,
     rest_models,
+    watchdog,
 )
 from quetz.authentication import AuthenticatorRegistry, BaseAuthenticator
 from quetz.authentication import github as auth_github
@@ -1864,6 +1865,20 @@ def start_sync_download_counts():
             raise
 
     app.sync_download_task = asyncio.create_task(task())
+
+
+@app.on_event("startup")
+async def start_event_loop_watchdog():
+    app.loop_watchdog = watchdog.EventLoopWatchdog(
+        asyncio.get_running_loop(),
+        stall_seconds=float(os.environ.get("QUETZ_LOOP_STALL_SECONDS", 5)),
+    )
+    app.loop_watchdog.start()
+
+
+@app.on_event("shutdown")
+async def stop_event_loop_watchdog():
+    app.loop_watchdog.stop()
 
 
 @app.on_event("shutdown")
