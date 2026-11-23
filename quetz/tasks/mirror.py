@@ -161,6 +161,19 @@ def download_remote_file(
         logger.debug(
             f"Downloaded {channel}/{path} in {time.monotonic() - started:.2f}s"
         )
+    except RemoteFileNotFound:
+        # Expected for optional files clients probe for, like sharded repodata.
+        logger.debug(f"{channel}/{path} not found on remote")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"{channel}/{path} not found",
+        )
+    except RemoteServerError:
+        logger.warning(f"Failed to download {channel}/{path}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to download {channel}/{path} from remote",
+        )
     except Exception:
         logger.warning(f"Failed to download {channel}/{path}", exc_info=True)
         raise
