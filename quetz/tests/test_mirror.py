@@ -17,7 +17,7 @@ from quetz import hookimpl, rest_models
 from quetz.authorization import Rules
 from quetz.condainfo import CondaInfo
 from quetz.db_models import Channel, Package, PackageVersion, User
-from quetz.deps import get_remote_session
+from quetz.deps import get_channel_allow_proxy, get_remote_session
 from quetz.jobs.runner import Supervisor
 from quetz.pkgstores import PackageStore
 from quetz.tasks import mirror
@@ -653,14 +653,15 @@ def test_download_remote_file_error_status(
 
 
 def test_download_remote_file_in_parallel(
-    app, client, owner, monkeypatch: pytest.MonkeyPatch
+    app, client, owner, db, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
     Parallel requests for a file being downloaded wait for that download instead of
     downloading it again.
 
     The remote only answers once every request has asked for the download lock, so
-    the requests overlap on every run.
+    the requests overlap on every run. The requests get the channel without a query:
+    in tests they all share one database session, which cannot run them concurrently.
     """
     response = client.get("/api/dummylogin/bartosz")
     assert response.status_code == 200
@@ -675,6 +676,9 @@ def test_download_remote_file_in_parallel(
         },
     )
     assert response.status_code == 201
+    channel = db.query(Channel).filter_by(name="proxy-channel").one()
+    db.refresh(channel)
+    db.expunge(channel)
 
     all_requested = threading.Event()
     requested_urls: list[str] = []
@@ -707,6 +711,7 @@ def test_download_remote_file_in_parallel(
             pass
 
     app.dependency_overrides[get_remote_session] = BlockingSession
+    app.dependency_overrides[get_channel_allow_proxy] = lambda: channel
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             downloads = [
@@ -716,6 +721,7 @@ def test_download_remote_file_in_parallel(
             responses = [download.result() for download in downloads]
     finally:
         app.dependency_overrides.pop(get_remote_session)
+        app.dependency_overrides.pop(get_channel_allow_proxy)
 
     for response in responses:
         assert response.status_code == 200, response.text
