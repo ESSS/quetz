@@ -16,7 +16,7 @@ dependencies:
   - python-multipart
   - uvicorn
   - zstandard
-  - conda-build
+  - conda-build <24.7
   - appdirs
   - toml
   - fsspec
@@ -47,7 +47,9 @@ dependencies:
   - pytest-mock
   - rq
   - libcflib
-  - mamba
+  - mamba <2
+  - conda <26.9
+  - conda-index <0.6
   - conda-content-trust
   - pyinstrument
   - pytest-asyncio
