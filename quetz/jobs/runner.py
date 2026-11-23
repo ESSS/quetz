@@ -63,7 +63,7 @@ def parse_conda_spec(conda_spec: str):
 
     package_specs = []
     for name, versions in exprs_list:
-        version_spec = None
+        version_spec: tuple | None = None
         for spec_str in versions.split(","):
             if spec_str.startswith("=="):
                 condition = ("eq", spec_str[2:])

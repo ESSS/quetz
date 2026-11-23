@@ -9,8 +9,7 @@ repos:
       # Run the formatter.
       - id: ruff-format
   - repo: https://github.com/pre-commit/mirrors-mypy
-    # Note: updating to v1.0.0 a bit more work
-    rev: v0.991
+    rev: v1.20.2
     hooks:
       - id: mypy
         files: ^quetz/
@@ -20,7 +19,6 @@ repos:
           - types-Jinja2
           - types-mock
           - types-orjson
-          - types-pkg-resources
           - types-redis
           - types-requests
           - types-six
