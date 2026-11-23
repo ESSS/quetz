@@ -2,7 +2,7 @@ name: quetz
 channels:
   - https://repo.mamba.pm/conda-forge
 dependencies:
-  - python>=3.7
+  - python >=3.7,<3.14
   - pip
   - fastapi <0.137
   - starlette <1
