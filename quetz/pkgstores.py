@@ -16,6 +16,7 @@ import tempfile
 import warnings
 from contextlib import contextmanager
 from os import PathLike
+from pathlib import Path
 from threading import Lock
 from typing import IO, List, Tuple, Union
 
@@ -263,7 +264,10 @@ class LocalStore(PackageStore):
 
     def list_files(self, channel: str):
         channel_dir = os.path.join(self.channels_dir, channel)
-        return [os.path.relpath(f, channel_dir) for f in self.fs.find(channel_dir)]
+        return [
+            Path(os.path.relpath(f, channel_dir)).as_posix()
+            for f in self.fs.find(channel_dir)
+        ]
 
     def url(self, channel: str, src: str, expires=0):
         if self.redirect_enabled:
