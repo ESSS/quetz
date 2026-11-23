@@ -208,7 +208,7 @@ class LocalStore(PackageStore):
         else:
             f.flush()  # Belt and braces (network file systems)
             f.close()
-            os.rename(tmpname, full_path)
+            os.replace(tmpname, full_path)
 
     def create_channel(self, name):
         self.fs.makedirs(path.join(self.channels_dir, name), exist_ok=True)
