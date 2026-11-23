@@ -1,6 +1,8 @@
 import concurrent.futures
 import json
 import os
+import threading
+import time
 import uuid
 from io import BytesIO
 from pathlib import Path
@@ -17,7 +19,9 @@ from quetz import hookimpl, rest_models
 from quetz.authorization import Rules
 from quetz.condainfo import CondaInfo
 from quetz.db_models import Channel, Package, PackageVersion, User
+from quetz.deps import get_remote_session
 from quetz.jobs.runner import Supervisor
+from quetz.pkgstores import PackageStore
 from quetz.tasks import mirror
 from quetz.tasks.indexing import update_indexes
 from quetz.tasks.mirror import (
@@ -650,8 +654,16 @@ def test_download_remote_file_error_status(
     )
 
 
-def test_download_remote_file_in_parallel(client, owner, dummy_repo):
-    """Test downloading in parallel."""
+def test_download_remote_file_in_parallel(
+    app, client, owner, mocker: MockerFixture
+) -> None:
+    """
+    Parallel requests for a file being downloaded wait for that download instead of
+    downloading it again.
+
+    The remote only answers once every request has asked for the download lock, so
+    the requests overlap on every run.
+    """
     response = client.get("/api/dummylogin/bartosz")
     assert response.status_code == 200
 
@@ -666,19 +678,43 @@ def test_download_remote_file_in_parallel(client, owner, dummy_repo):
     )
     assert response.status_code == 201
 
-    def get_remote_file(filename):
-        return client.get(f"/get/proxy-channel/{filename}")
+    acquire_spy = mocker.spy(PackageStore, "acquire_download_lock")
+    all_requested = threading.Event()
+    requested_urls: list[str] = []
 
-    # download the same file from the remote server in parallel (3 threads)
-    test_file = "test_file3.txt"
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        downloads = [executor.submit(get_remote_file, test_file) for index in range(3)]
-        for future in concurrent.futures.as_completed(downloads):
-            response = future.result()
-            assert response.status_code == 200
-            assert response.content == b"Hello world!"
-    # the file was only downloaded once and served from cache for other requests
-    assert dummy_repo == [(f"http://host/{test_file}")]
+    class BlockingSession:
+        def get(self, url: str, stream: bool = False) -> DummyResponse:
+            assert all_requested.wait(timeout=30)
+            requested_urls.append(url)
+            return DummyResponse(b"Hello world!")
+
+        def close(self) -> None:
+            pass
+
+    app.dependency_overrides[get_remote_session] = BlockingSession
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            downloads = [
+                executor.submit(client.get, "/get/proxy-channel/test_file3.txt")
+                for _ in range(3)
+            ]
+            try:
+                deadline = time.monotonic() + 30
+                while acquire_spy.call_count < 3:
+                    assert (
+                        time.monotonic() < deadline
+                    ), "a request never got to the lock"
+                    time.sleep(0.01)
+            finally:
+                all_requested.set()
+            responses = [download.result() for download in downloads]
+    finally:
+        app.dependency_overrides.pop(get_remote_session)
+
+    for response in responses:
+        assert response.status_code == 200, response.text
+        assert response.content == b"Hello world!"
+    assert requested_urls == ["http://host/test_file3.txt"]
 
 
 def test_proxy_repodata_cached(client, owner, dummy_repo):
