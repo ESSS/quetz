@@ -1,7 +1,6 @@
 import concurrent.futures
 import json
 import threading
-import time
 import uuid
 from io import BytesIO
 from pathlib import Path
@@ -654,7 +653,7 @@ def test_download_remote_file_error_status(
 
 
 def test_download_remote_file_in_parallel(
-    app, client, owner, mocker: MockerFixture
+    app, client, owner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
     Parallel requests for a file being downloaded wait for that download instead of
@@ -677,13 +676,30 @@ def test_download_remote_file_in_parallel(
     )
     assert response.status_code == 201
 
-    acquire_spy = mocker.spy(PackageStore, "acquire_download_lock")
     all_requested = threading.Event()
     requested_urls: list[str] = []
+    # Counted by hand: a mock's call count can miss calls made at the same time.
+    lock_requests = 0
+    lock_requests_mutex = threading.Lock()
+    acquire_download_lock = PackageStore.acquire_download_lock
+
+    def counting_acquire_download_lock(
+        store: PackageStore, channel: str, destination: str
+    ) -> tuple[threading.Lock, bool]:
+        nonlocal lock_requests
+        with lock_requests_mutex:
+            lock_requests += 1
+            if lock_requests == 3:
+                all_requested.set()
+        return acquire_download_lock(store, channel, destination)
+
+    monkeypatch.setattr(
+        PackageStore, "acquire_download_lock", counting_acquire_download_lock
+    )
 
     class BlockingSession:
         def get(self, url: str, stream: bool = False) -> DummyResponse:
-            assert all_requested.wait(timeout=30)
+            assert all_requested.wait(timeout=30), "a request never got to the lock"
             requested_urls.append(url)
             return DummyResponse(b"Hello world!")
 
@@ -697,15 +713,6 @@ def test_download_remote_file_in_parallel(
                 executor.submit(client.get, "/get/proxy-channel/test_file3.txt")
                 for _ in range(3)
             ]
-            try:
-                deadline = time.monotonic() + 30
-                while acquire_spy.call_count < 3:
-                    assert (
-                        time.monotonic() < deadline
-                    ), "a request never got to the lock"
-                    time.sleep(0.01)
-            finally:
-                all_requested.set()
             responses = [download.result() for download in downloads]
     finally:
         app.dependency_overrides.pop(get_remote_session)
