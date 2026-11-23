@@ -1,6 +1,5 @@
 import concurrent.futures
 import json
-import os
 import threading
 import time
 import uuid
@@ -819,7 +818,7 @@ def test_mirror_initial_sync(client, dummy_repo, owner, expected_paths, job_supe
     assert response.status_code == 201
     job_supervisor.run_once()  # the sync job is added implicitly to new mirror channels
 
-    assert dummy_repo == [os.path.join(host, p) for p in expected_paths]
+    assert dummy_repo == [f"{host}/{p}" for p in expected_paths]
 
 
 @pytest.mark.parametrize("user_role", ["maintainer"])

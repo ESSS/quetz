@@ -2,6 +2,7 @@ import contextlib
 import json
 import logging
 import os
+import posixpath
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -79,7 +80,7 @@ class RemoteFile:
             session = requests.Session()
         else:
             session_as_param = True
-        remote_url = os.path.join(host, path)
+        remote_url = posixpath.join(host, path)
         logger.debug(f"GET {remote_url}")
         try:
             response = session.get(remote_url, stream=True)
@@ -107,7 +108,7 @@ class RemoteFile:
 
         # rewind
         self.file.seek(0)
-        _, self.filename = os.path.split(remote_url)
+        _, self.filename = posixpath.split(remote_url)
         self.content_type = response.headers.get("content-type")
 
     def json(self):
@@ -375,7 +376,7 @@ def initial_sync_mirror(
     repodata = {}
     for repodata_fn in ["repodata_from_packages.json", "repodata.json"]:
         try:
-            repo_file = remote_repository.open(os.path.join(arch, repodata_fn))
+            repo_file = remote_repository.open(posixpath.join(arch, repodata_fn))
             repodata = json.load(repo_file.file)
             break
         except RemoteServerError:
@@ -483,7 +484,7 @@ def initial_sync_mirror(
 
         for package_name, metadata in packages.items():
             if check_package_membership(package_name, includelist, excludelist):
-                path = os.path.join(arch, package_name)
+                path = posixpath.join(arch, package_name)
 
                 # try to find out whether it's a new package version
 

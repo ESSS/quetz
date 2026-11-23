@@ -10,6 +10,7 @@ import hashlib
 import logging
 import os
 import os.path as path
+import posixpath
 import shutil
 import tempfile
 import warnings
@@ -268,16 +269,18 @@ class LocalStore(PackageStore):
         if self.redirect_enabled:
             # generate url + secret if necessary
             if self.redirect_secret:
-                url = path.join(self.channels_dir, channel, src)
+                url = posixpath.join(self.channels_dir, channel, src)
                 md5hash, expires_by = nginx_secure_link(
                     url, self.redirect_secret, self.redirect_expiration
                 )
                 return (
-                    path.join(self.redirect_endpoint, url)
+                    posixpath.join(self.redirect_endpoint, url)
                     + f"?md5={md5hash}&expires={expires_by}"
                 )
 
-            return path.join(self.redirect_endpoint, self.channels_dir, channel, src)
+            return posixpath.join(
+                self.redirect_endpoint, self.channels_dir, channel, src
+            )
         else:
             return path.abspath(path.join(self.channels_dir, channel, src))
 
