@@ -50,20 +50,6 @@ class PackageStore(abc.ABC):
         # protects check-then-set operations on ``_download_locks``
         self._download_locks_mutex = Lock()
 
-    def get_download_lock(self, channel: str, destination: str):
-        with self._download_locks_mutex:
-            return self._download_locks.get((channel, destination))
-
-    def create_download_lock(self, channel: str, destination: str):
-        lock = Lock()
-        with self._download_locks_mutex:
-            self._download_locks[(channel, destination)] = lock
-        return lock
-
-    def delete_download_lock(self, channel: str, destination: str):
-        with self._download_locks_mutex:
-            self._download_locks.pop((channel, destination), None)
-
     def acquire_download_lock(self, channel: str, destination: str):
         """Atomically get the download lock for a file.
 

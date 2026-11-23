@@ -1513,7 +1513,9 @@ def test_download_lock_released_on_failure(
             download_remote_file(repo, pkgstore, "chan", "file.txt")
         if expected_status_code is not None:
             assert exc.value.status_code == expected_status_code
-        assert pkgstore.get_download_lock("chan", "file.txt") is None
+        lock, is_owner = pkgstore.acquire_download_lock("chan", "file.txt")
+        assert is_owner, "the failed download left its lock behind"
+        pkgstore.release_download_lock("chan", "file.txt")
 
     # The second request retried the download instead of waiting on a stale lock.
     assert repo.calls == 2
