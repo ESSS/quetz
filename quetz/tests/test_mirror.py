@@ -1477,6 +1477,36 @@ def test_download_lock_released_on_failure(
     assert repo.calls == 2
 
 
+@pytest.mark.parametrize(
+    "max_age, expect_download",
+    [(None, False), (3600, False), (0, True)],
+)
+def test_download_remote_file_skips_file_stored_meanwhile(
+    config, max_age: float | None, expect_download: bool
+) -> None:
+    """
+    A request that found the file missing or stale downloads it only if it still is
+    once no other download is underway, as one may have stored it in the meantime.
+    """
+    pkgstore = config.get_package_store()
+    pkgstore.add_file(b"stored", "chan", "file.txt")
+
+    class CountingRepository(RemoteRepository):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def open(self, path: str) -> SimpleNamespace:
+            self.calls += 1
+            return SimpleNamespace(file=BytesIO(b"downloaded"))
+
+    repo = CountingRepository()
+    download_remote_file(repo, pkgstore, "chan", "file.txt", max_age=max_age)
+
+    assert repo.calls == (1 if expect_download else 0)
+    with pkgstore.serve_path("chan", "file.txt") as f:
+        assert f.read() == (b"downloaded" if expect_download else b"stored")
+
+
 def test_download_remote_request_error(config) -> None:
     """
     A request that fails without a response, like a timeout, is a remote failure

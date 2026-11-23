@@ -1925,7 +1925,9 @@ def serve_path(
                     f"Proxy cache expired for {channel.name}/{path} "
                     f"(age {time.time() - fmtime:.0f}s, ttl {channel.ttl}s)"
                 )
-                download_remote_file(repository, pkgstore, channel.name, path)
+                download_remote_file(
+                    repository, pkgstore, channel.name, path, max_age=channel.ttl
+                )
 
     if (
         is_package_request or pkgstore.kind == "LocalStore"

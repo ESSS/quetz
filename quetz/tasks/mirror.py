@@ -114,10 +114,36 @@ class RemoteFile:
         return json.load(self.file)
 
 
+def _is_stored_and_fresh(
+    pkgstore: PackageStore, channel: str, path: str, max_age: float | None
+) -> bool:
+    """Whether the stored copy of the file exists and, given `max_age`, is fresh."""
+    if not pkgstore.file_exists(channel, path):
+        return False
+    if max_age is None:
+        return True
+    _, mtime, _ = pkgstore.get_filemetadata(channel, path)
+    return time.time() - mtime < max_age
+
+
 def download_remote_file(
-    repository: RemoteRepository, pkgstore: PackageStore, channel: str, path: str
+    repository: RemoteRepository,
+    pkgstore: PackageStore,
+    channel: str,
+    path: str,
+    max_age: float | None = None,
 ):
-    """Download a file from a remote repository to a package store"""
+    """
+    Download a file from a remote repository to a package store.
+
+    Concurrent calls for the same file download it once: the others wait for that
+    download instead.
+
+    :param max_age: Seconds after which a stored copy is stale and downloaded again;
+        `None` downloads only a missing file. The caller decides to download from the
+        same criterion, which is checked again once no other download is underway,
+        as one may have finished in between.
+    """
 
     # Atomically check whether a download is already underway for this file
     lock, is_owner = pkgstore.acquire_download_lock(channel, path)
@@ -145,6 +171,9 @@ def download_remote_file(
     # We own the lock: always remove it, even if the download fails, otherwise
     # waiters return immediately and later requests never retry the download.
     try:
+        if _is_stored_and_fresh(pkgstore, channel, path, max_age):
+            logger.debug(f"{channel}/{path} was downloaded by a concurrent request")
+            return
         started = time.monotonic()
         logger.debug(f"Downloading {path} from {channel} to pkgstore")
         remote_file = repository.open(path)
