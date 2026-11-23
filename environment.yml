@@ -4,7 +4,8 @@ channels:
 dependencies:
   - python>=3.7
   - pip
-  - fastapi
+  - fastapi <0.137
+  - starlette <1
   - typer >=0.9,<1.0
   - authlib=0.15.5
   - psycopg2
