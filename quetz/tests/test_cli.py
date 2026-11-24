@@ -488,6 +488,10 @@ def test_create_conf(empty_deployment_dir: Path, empty_config_on_exit: None):
     assert empty_deployment_dir.joinpath("quetz.sqlite").exists()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the first deployment keeps files open, so Windows cannot delete it",
+)
 def test_create_exists_delete(empty_deployment_dir: Path, empty_config_on_exit: None):
     """Existing deployment is removed if delete arg is used."""
     runner.invoke(cli.app, ["create", str(empty_deployment_dir), "--create-conf"])

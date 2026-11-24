@@ -76,7 +76,7 @@ def test_delete_package_versions_with_package(
 
     # Get package files
     package_filenames = [
-        os.path.join(version.platform, version.filename)
+        f"{version.platform}/{version.filename}"
         for version in public_package.package_versions  # type: ignore
     ]
 

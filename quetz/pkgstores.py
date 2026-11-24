@@ -10,11 +10,13 @@ import hashlib
 import logging
 import os
 import os.path as path
+import posixpath
 import shutil
 import tempfile
 import warnings
 from contextlib import contextmanager
 from os import PathLike
+from pathlib import Path
 from threading import Lock
 from typing import IO, List, Tuple, Union
 
@@ -45,16 +47,34 @@ logger = logging.getLogger("quetz")
 class PackageStore(abc.ABC):
     def __init__(self):
         self._download_locks = {}
+        # protects check-then-set operations on ``_download_locks``
+        self._download_locks_mutex = Lock()
 
-    def get_download_lock(self, channel: str, destination: str):
-        return self._download_locks.get((channel, destination))
+    def acquire_download_lock(self, channel: str, destination: str):
+        """Atomically get the download lock for a file.
 
-    def create_download_lock(self, channel: str, destination: str):
-        lock = self._download_locks[(channel, destination)] = Lock()
-        return lock
+        Returns ``(lock, is_owner)``. If ``is_owner`` is True the caller created
+        the lock, already holds it, and must call ``release_download_lock``
+        (in a ``finally`` block) when done. Otherwise another thread is
+        downloading the file and the caller may wait on ``lock``.
+        """
+        key = (channel, destination)
+        with self._download_locks_mutex:
+            lock = self._download_locks.get(key)
+            if lock is not None:
+                return lock, False
+            lock = Lock()
+            lock.acquire()
+            self._download_locks[key] = lock
+            return lock, True
 
-    def delete_download_lock(self, channel: str, destination: str):
-        del self._download_locks[(channel, destination)]
+    def release_download_lock(self, channel: str, destination: str):
+        """Remove the lock created by ``acquire_download_lock`` and wake waiters."""
+        key = (channel, destination)
+        with self._download_locks_mutex:
+            lock = self._download_locks.pop(key, None)
+        if lock is not None and lock.locked():
+            lock.release()
 
     @property
     def kind(self):
@@ -175,7 +195,7 @@ class LocalStore(PackageStore):
         else:
             f.flush()  # Belt and braces (network file systems)
             f.close()
-            os.rename(tmpname, full_path)
+            os.replace(tmpname, full_path)
 
     def create_channel(self, name):
         self.fs.makedirs(path.join(self.channels_dir, name), exist_ok=True)
@@ -230,22 +250,27 @@ class LocalStore(PackageStore):
 
     def list_files(self, channel: str):
         channel_dir = os.path.join(self.channels_dir, channel)
-        return [os.path.relpath(f, channel_dir) for f in self.fs.find(channel_dir)]
+        return [
+            Path(os.path.relpath(f, channel_dir)).as_posix()
+            for f in self.fs.find(channel_dir)
+        ]
 
     def url(self, channel: str, src: str, expires=0):
         if self.redirect_enabled:
             # generate url + secret if necessary
             if self.redirect_secret:
-                url = path.join(self.channels_dir, channel, src)
+                url = posixpath.join(self.channels_dir, channel, src)
                 md5hash, expires_by = nginx_secure_link(
                     url, self.redirect_secret, self.redirect_expiration
                 )
                 return (
-                    path.join(self.redirect_endpoint, url)
+                    posixpath.join(self.redirect_endpoint, url)
                     + f"?md5={md5hash}&expires={expires_by}"
                 )
 
-            return path.join(self.redirect_endpoint, self.channels_dir, channel, src)
+            return posixpath.join(
+                self.redirect_endpoint, self.channels_dir, channel, src
+            )
         else:
             return path.abspath(path.join(self.channels_dir, channel, src))
 

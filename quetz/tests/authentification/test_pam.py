@@ -1,10 +1,15 @@
 import getpass
+import sys
 from unittest import mock
 
 import pytest
 from fastapi import Request
 
 from quetz.authentication.pam import PAMAuthenticator
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="PAM is only available on Unix"
+)
 
 
 @pytest.fixture

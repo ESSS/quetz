@@ -169,7 +169,7 @@ def config_base(database_url, plugins, config_auth):
 {config_auth}
 
 [sqlalchemy]
-database_url = "{database_url}"
+database_url = '{database_url}'
 
 [session]
 secret = "eWrkA6xpa7LTSSYUwZEEVoOU62501Ucf9lmLcgzTj1I="

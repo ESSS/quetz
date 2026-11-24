@@ -1914,13 +1914,20 @@ def serve_path(
     if channel.mirror_channel_url and channel.mirror_mode == "proxy":
         repository = RemoteRepository(channel.mirror_channel_url, session)
         if not pkgstore.file_exists(channel.name, path):
+            logger.debug(f"Proxy cache miss for {channel.name}/{path}")
             download_remote_file(repository, pkgstore, channel.name, path)
         elif path.endswith(".json"):
             # repodata.json and current_repodata.json are cached locally
             # for channel.ttl seconds
             _, fmtime, _ = pkgstore.get_filemetadata(channel.name, path)
             if time.time() - fmtime >= channel.ttl:
-                download_remote_file(repository, pkgstore, channel.name, path)
+                logger.debug(
+                    f"Proxy cache expired for {channel.name}/{path} "
+                    f"(age {time.time() - fmtime:.0f}s, ttl {channel.ttl}s)"
+                )
+                download_remote_file(
+                    repository, pkgstore, channel.name, path, max_age=channel.ttl
+                )
 
     if (
         is_package_request or pkgstore.kind == "LocalStore"

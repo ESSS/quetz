@@ -46,6 +46,22 @@ gcs_config = {
 test_dir = os.path.dirname(__file__)
 
 
+def _has_gcs_credentials() -> bool:
+    """
+    Whether a GCS project and a non-empty token file are configured.
+
+    CI always sets the project and writes the token file from a secret, which is
+    empty in forks without that secret, so the project alone is not enough.
+    """
+    token_path = gcs_config["token"]
+    return bool(
+        gcs_config["project"]
+        and token_path
+        and os.path.isfile(token_path)
+        and Path(token_path).read_text().strip()
+    )
+
+
 @pytest.mark.parametrize("redirect_enabled", [False, True])
 def test_local_store(redirect_enabled):
     temp_dir = os.path.join(test_dir, "test_pkg_store_" + str(int(time.time())))
@@ -130,7 +146,7 @@ def local_store():
         pytest.param(
             "gcs_store",
             marks=pytest.mark.skipif(
-                not gcs_config["project"],
+                not _has_gcs_credentials(),
                 reason="requires google cloud storage credentials",
             ),
         ),

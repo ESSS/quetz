@@ -1,7 +1,5 @@
-import grp
 import logging
 import os
-import pwd
 from typing import List, Optional
 
 from fastapi import Request
@@ -13,6 +11,10 @@ from quetz.config import Config, ConfigEntry, ConfigSection
 logger = logging.getLogger("quetz")
 
 try:
+    # PAM and these modules are only available on Unix.
+    import grp
+    import pwd
+
     import pamela
 
     class PAMAuthenticator(BaseAuthenticator):

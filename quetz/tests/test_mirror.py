@@ -1,26 +1,35 @@
 import concurrent.futures
 import json
-import os
+import threading
 import uuid
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 from urllib.parse import urlparse
 
 import pytest
+import requests
+from fastapi import HTTPException
+from pytest_mock import MockerFixture
 
 from quetz import hookimpl, rest_models
 from quetz.authorization import Rules
 from quetz.condainfo import CondaInfo
 from quetz.db_models import Channel, Package, PackageVersion, User
+from quetz.deps import get_channel_allow_proxy, get_remote_session
 from quetz.jobs.runner import Supervisor
+from quetz.pkgstores import PackageStore
+from quetz.tasks import mirror
 from quetz.tasks.indexing import update_indexes
 from quetz.tasks.mirror import (
     KNOWN_SUBDIRS,
+    RemoteFileNotFound,
     RemoteRepository,
     RemoteServerError,
     create_packages_from_channeldata,
     create_versions_from_repodata,
+    download_remote_file,
     handle_repodata_package,
     initial_sync_mirror,
 )
@@ -600,8 +609,25 @@ def test_download_remote_file(client, owner, dummy_repo):
     assert dummy_repo == [("http://host/test_file_2.txt")]
 
 
-def test_download_remote_file_in_parallel(client, owner, dummy_repo):
-    """Test downloading in parallel."""
+@pytest.mark.parametrize(
+    "status_code, expected_status_code",
+    [(404, 404), (500, 502)],
+)
+def test_download_remote_file_error_status(
+    client,
+    owner,
+    dummy_remote_session_object,
+    status_code: int,
+    expected_status_code: int,
+) -> None:
+    """
+    Upstream errors must map to proper HTTP statuses instead of a 500: clients
+    probing optional files (e.g. `repodata_shards.msgpack.zst`) rely on a 404 to
+    fall back to `repodata.json`.
+
+    Requested twice, so the second request must reach the remote again and get the
+    same status instead of being served by a stale lock.
+    """
     response = client.get("/api/dummylogin/bartosz")
     assert response.status_code == 200
 
@@ -616,19 +642,91 @@ def test_download_remote_file_in_parallel(client, owner, dummy_repo):
     )
     assert response.status_code == 201
 
-    def get_remote_file(filename):
-        return client.get(f"/get/proxy-channel/{filename}")
+    for _ in range(2):
+        response = client.get("/get/proxy-channel/noarch/repodata_shards.msgpack.zst")
+        assert response.status_code == expected_status_code
 
-    # download the same file from the remote server in parallel (3 threads)
-    test_file = "test_file3.txt"
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        downloads = [executor.submit(get_remote_file, test_file) for index in range(3)]
-        for future in concurrent.futures.as_completed(downloads):
-            response = future.result()
-            assert response.status_code == 200
-            assert response.content == b"Hello world!"
-    # the file was only downloaded once and served from cache for other requests
-    assert dummy_repo == [(f"http://host/{test_file}")]
+    assert (
+        dummy_remote_session_object.files
+        == ["http://host/noarch/repodata_shards.msgpack.zst"] * 2
+    )
+
+
+def test_download_remote_file_in_parallel(
+    app, client, owner, db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Parallel requests for a file being downloaded wait for that download instead of
+    downloading it again.
+
+    The remote only answers once every request has asked for the download lock, so
+    the requests overlap on every run. The requests get the channel without a query:
+    in tests they all share one database session, which cannot run them concurrently.
+    """
+    response = client.get("/api/dummylogin/bartosz")
+    assert response.status_code == 200
+
+    response = client.post(
+        "/api/channels",
+        json={
+            "name": "proxy-channel",
+            "private": False,
+            "mirror_channel_url": "http://host",
+            "mirror_mode": "proxy",
+        },
+    )
+    assert response.status_code == 201
+    channel = db.query(Channel).filter_by(name="proxy-channel").one()
+    db.refresh(channel)
+    db.expunge(channel)
+
+    all_requested = threading.Event()
+    requested_urls: list[str] = []
+    # Counted by hand: a mock's call count can miss calls made at the same time.
+    lock_requests = 0
+    lock_requests_mutex = threading.Lock()
+    acquire_download_lock = PackageStore.acquire_download_lock
+
+    def counting_acquire_download_lock(
+        store: PackageStore, channel: str, destination: str
+    ) -> tuple[threading.Lock, bool]:
+        nonlocal lock_requests
+        with lock_requests_mutex:
+            lock_requests += 1
+            if lock_requests == 3:
+                all_requested.set()
+        return acquire_download_lock(store, channel, destination)
+
+    monkeypatch.setattr(
+        PackageStore, "acquire_download_lock", counting_acquire_download_lock
+    )
+
+    class BlockingSession:
+        def get(self, url: str, stream: bool = False) -> DummyResponse:
+            assert all_requested.wait(timeout=30), "a request never got to the lock"
+            requested_urls.append(url)
+            return DummyResponse(b"Hello world!")
+
+        def close(self) -> None:
+            pass
+
+    app.dependency_overrides[get_remote_session] = BlockingSession
+    app.dependency_overrides[get_channel_allow_proxy] = lambda: channel
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            downloads = [
+                executor.submit(client.get, "/get/proxy-channel/test_file3.txt")
+                for _ in range(3)
+            ]
+            responses = [download.result() for download in downloads]
+    finally:
+        app.dependency_overrides.pop(get_remote_session)
+        app.dependency_overrides.pop(get_channel_allow_proxy)
+
+    for response in responses:
+        assert response.status_code == 200, response.text
+        assert response.content == b"Hello world!"
+    assert requested_urls == ["http://host/test_file3.txt"]
 
 
 def test_proxy_repodata_cached(client, owner, dummy_repo):
@@ -733,7 +831,7 @@ def test_mirror_initial_sync(client, dummy_repo, owner, expected_paths, job_supe
     assert response.status_code == 201
     job_supervisor.run_once()  # the sync job is added implicitly to new mirror channels
 
-    assert dummy_repo == [os.path.join(host, p) for p in expected_paths]
+    assert dummy_repo == [f"{host}/{p}" for p in expected_paths]
 
 
 @pytest.mark.parametrize("user_role", ["maintainer"])
@@ -1378,3 +1476,134 @@ def test_handle_repodata_package_with_plugin(
     )
 
     assert plugin.about["conda_version"] == "4.8.4"
+
+
+@pytest.mark.parametrize(
+    "failure, expected_exception, expected_status_code",
+    [
+        ("remote_error", HTTPException, 502),
+        ("remote_not_found", HTTPException, 404),
+        ("store_error", OSError, None),
+    ],
+)
+def test_download_lock_released_on_failure(
+    config,
+    mocker: MockerFixture,
+    failure: str,
+    expected_exception: type[Exception],
+    expected_status_code: int | None,
+) -> None:
+    """
+    A failed download must not leave a stale lock behind, whether the remote or the
+    store fails: otherwise later requests for the file wait on it instead of retrying.
+    """
+    pkgstore = config.get_package_store()
+    if failure == "store_error":
+        mocker.patch.object(pkgstore, "add_package", autospec=True, side_effect=OSError)
+
+    class FailingRepository(RemoteRepository):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def open(self, path: str) -> SimpleNamespace:
+            self.calls += 1
+            if failure == "remote_error":
+                raise RemoteServerError
+            if failure == "remote_not_found":
+                raise RemoteFileNotFound
+            return SimpleNamespace(file=BytesIO(b"content"))
+
+    repo = FailingRepository()
+    for _ in range(2):
+        with pytest.raises(expected_exception) as exc:
+            download_remote_file(repo, pkgstore, "chan", "file.txt")
+        if expected_status_code is not None:
+            assert exc.value.status_code == expected_status_code
+        lock, is_owner = pkgstore.acquire_download_lock("chan", "file.txt")
+        assert is_owner, "the failed download left its lock behind"
+        pkgstore.release_download_lock("chan", "file.txt")
+
+    # The second request retried the download instead of waiting on a stale lock.
+    assert repo.calls == 2
+
+
+@pytest.mark.parametrize(
+    "max_age, expect_download",
+    [(None, False), (3600, False), (0, True)],
+)
+def test_download_remote_file_skips_file_stored_meanwhile(
+    config, max_age: float | None, expect_download: bool
+) -> None:
+    """
+    A request that found the file missing or stale downloads it only if it still is
+    once no other download is underway, as one may have stored it in the meantime.
+    """
+    pkgstore = config.get_package_store()
+    pkgstore.add_file(b"stored", "chan", "file.txt")
+
+    class CountingRepository(RemoteRepository):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def open(self, path: str) -> SimpleNamespace:
+            self.calls += 1
+            return SimpleNamespace(file=BytesIO(b"downloaded"))
+
+    repo = CountingRepository()
+    download_remote_file(repo, pkgstore, "chan", "file.txt", max_age=max_age)
+
+    assert repo.calls == (1 if expect_download else 0)
+    with pkgstore.serve_path("chan", "file.txt") as f:
+        assert f.read() == (b"downloaded" if expect_download else b"stored")
+
+
+def test_download_remote_request_error(config) -> None:
+    """
+    A request that fails without a response, like a timeout, is a remote failure
+    (502) rather than an internal error, and later requests retry it.
+    """
+
+    class TimingOutSession:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def get(self, url: str, stream: bool = False) -> None:
+            self.calls += 1
+            raise requests.Timeout
+
+    session = TimingOutSession()
+    repo = RemoteRepository("http://host", session)
+    pkgstore = config.get_package_store()
+    for _ in range(2):
+        with pytest.raises(HTTPException) as exc:
+            download_remote_file(repo, pkgstore, "chan", "file.txt")
+        assert exc.value.status_code == 502
+
+    assert session.calls == 2
+
+
+def test_download_lock_wait_timeout(config, monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    A request waiting on another one's download of the same file gives up with a 504
+    instead of blocking forever, without downloading the file itself or touching
+    the other request's lock.
+    """
+
+    class NoDownloadRepository(RemoteRepository):
+        def __init__(self) -> None:
+            pass
+
+        def open(self, path: str) -> None:
+            pytest.fail("a waiting request must not download the file")
+
+    pkgstore = config.get_package_store()
+    lock, is_owner = pkgstore.acquire_download_lock("chan", "file.txt")
+    assert is_owner
+    try:
+        monkeypatch.setattr(mirror, "DOWNLOAD_LOCK_WAIT_TIMEOUT", 0.1)
+        with pytest.raises(HTTPException) as exc:
+            download_remote_file(NoDownloadRepository(), pkgstore, "chan", "file.txt")
+        assert exc.value.status_code == 504
+        assert lock.locked()
+    finally:
+        pkgstore.release_download_lock("chan", "file.txt")

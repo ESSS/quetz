@@ -262,7 +262,6 @@ def update_indexes(dao, pkgstore, channel_name, subdirs=None):
         if not path.is_file():
             continue
         rel_path = path.relative_to(tempdir_path)
-        to_upload = open(path, "rb")
         if len(rel_path.parts) == 2:
             channel_name, filename = rel_path.parts
             dest = f"{filename}{tmp_suffix}"
@@ -281,7 +280,7 @@ def update_indexes(dao, pkgstore, channel_name, subdirs=None):
                 bucket = pkgstore._bucket_map(channel_name)
                 fs.put_file(path, f"{bucket}/{dest}")
         else:
-            pkgstore.add_file(to_upload.read(), channel_name, dest)
+            pkgstore.add_file(path.read_bytes(), channel_name, dest)
 
         after_upload_move.append(dest)
 

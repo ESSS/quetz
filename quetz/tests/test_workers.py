@@ -1,5 +1,6 @@
 import os
 import socket
+import sys
 from contextlib import closing
 
 import pytest
@@ -101,7 +102,14 @@ def check_redis():
 @pytest.fixture(
     params=[
         "threading_worker",
-        "subprocess_worker",
+        pytest.param(
+            "subprocess_worker",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32",
+                reason="the worker process keeps the test directory in use on "
+                "Windows",
+            ),
+        ),
         pytest.param(  # type: ignore
             "redis_worker",
             marks=pytest.mark.skipif(not check_redis(), reason="no redis"),
@@ -139,6 +147,11 @@ def db_cleanup(config):
         db.commit()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the workers keep files in the test directory open, so Windows cannot "
+    "delete it",
+)
 @pytest.mark.asyncio
 async def test_threading_worker_execute(background_tasks, any_worker, db, config_dir):
     any_worker.execute(basic_function, config_dir=config_dir)

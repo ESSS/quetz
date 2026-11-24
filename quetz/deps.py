@@ -56,6 +56,11 @@ def get_db(config: Config = Depends(get_config)):
         yield db
     finally:
         db.close()
+        if logger.isEnabledFor(logging.DEBUG):
+            try:
+                logger.debug("db session closed: %s", db.get_bind().pool.status())
+            except Exception:  # pool may not support status() (e.g. in tests)
+                pass
 
 
 def get_dao(db: Session = Depends(get_db)):
