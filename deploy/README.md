@@ -1,7 +1,9 @@
 # Production deployment (packages.esss.com)
 
-Quetz and its Postgres run on **quetz02** (`10.0.0.189`) with Docker Compose, from Fred's checkout
-`/home/users/fred/quetz`. The repo-root `docker-compose.yml` is upstream's dev stack; don't use it.
+Quetz and its Postgres run on **quetz02** (`10.0.0.189`) with Docker Compose, from the clone
+`/opt/quetz` (owned by fred), used only by this stack. `/home/users/fred/quetz` is the old systemd
+service's checkout, kept for the rollback until it's deleted (cutover step 10). The repo-root
+`docker-compose.yml` is upstream's dev stack; don't use it.
 
 | File | What it is |
 | --- | --- |
@@ -12,7 +14,7 @@ Quetz and its Postgres run on **quetz02** (`10.0.0.189`) with Docker Compose, fr
 | `watchdog/` | Host timers: restart on unhealthy with evidence, deep check, stats history |
 | `update-lock.sh` | Re-solves `environment.yml` into a new `quetz-linux-64.lock` |
 
-All commands below run on quetz02 as a sudoer, from `/home/users/fred/quetz/deploy`, with
+All commands below run on quetz02 as a sudoer, from `/opt/quetz/deploy`, with
 `sudo` in front of `docker`.
 
 ## Health, restart and evidence
@@ -61,11 +63,11 @@ sudo docker compose down                 # stop both; NEVER `down -v`
 **Testing a branch.** The checkout is the code the container runs:
 
 ```bash
-sudo -u fred git -C /home/users/fred/quetz fetch origin
-sudo -u fred git -C /home/users/fred/quetz checkout --detach origin/<branch>
+sudo -u fred git -C /opt/quetz fetch origin
+sudo -u fred git -C /opt/quetz checkout --detach origin/<branch>
 sudo docker compose restart quetz
 # back:
-sudo -u fred git -C /home/users/fred/quetz checkout main && sudo -u fred git -C /home/users/fred/quetz pull
+sudo -u fred git -C /opt/quetz checkout main && sudo -u fred git -C /opt/quetz pull
 sudo docker compose restart quetz
 ```
 
@@ -158,18 +160,36 @@ sqlalchemy 2.0 → 2.1), and anyio runs the threadpool behind the November freez
 Outside 05:30–07:30 UTC (nightly CI at 06:08, apt upgrades at 06:00), with Fred online and a notice
 in #devops.
 
+**Dry run (2026-11-27).** Clone, `.env` and build only; the systemd Quetz keeps serving from
+`/home/users/fred/quetz`, which none of this touches:
+
+```bash
+sudo install -d -o fred -g "$(id -g fred)" -m 755 /opt/quetz
+sudo -u fred git clone "$(sudo -u fred git -C /home/users/fred/quetz remote get-url origin)" /opt/quetz
+sudo -u fred git -C /opt/quetz checkout --detach origin/fb-EDEN-2931-compose   # skip once merged
+cd /opt/quetz/deploy
+sudo install -m 600 -o root -g root .env.example .env
+sudoedit .env     # POSTGRES_PASSWORD: a new one, from `openssl rand -hex 24`
+sudo docker compose build
+```
+
+Compose refuses even `build` without `POSTGRES_PASSWORD`. That new password is set on the cluster
+at step 4.
+
 1. `pg_dump` (see above) from the old stack:
-   `sudo docker exec postgres-postgres-1 pg_dump -U postgres -d quetz -Fc`.
-2. Check that `.env` is there. It's created at the Friday dry run, before `docker compose build`
-   (compose refuses even `build` without `POSTGRES_PASSWORD`): from `.env.example`, with a **new**
-   DB password (`openssl rand -hex 24`).
+   `sudo docker exec postgres-postgres-1 pg_dump -U postgres -d quetz -Fc`. The DB holds every
+   user, role, channel and API key; copy the dump off the VM too.
+2. Check that `/opt/quetz/deploy/.env` is there (from the dry run). If `main` moved since, pull it
+   in `/opt/quetz`.
 3. `sudo systemctl disable --now quetz`.
 4. Set `.env`'s `POSTGRES_PASSWORD` on the old container (prompts, so it stays out of shell history):
    `sudo docker exec -it postgres-postgres-1 psql -U postgres -c '\password postgres'`.
 5. `cd /home/users/fred/postgres && sudo docker compose down` (no `-v`).
    **Check `sudo docker ps` shows no Postgres before going on:** two Postgres containers on the
    same data dir corrupt it.
-6. `cd /home/users/fred/quetz/deploy && sudo docker compose up -d --build`, then
+   **Fred takes the VM snapshot now:** with Quetz and Postgres both stopped, the DB files on disk are
+   consistent.
+6. `cd /opt/quetz/deploy && sudo docker compose up -d --build`, then
    `sudo docker compose ps` until both are `healthy`, and
    `sudo docker compose exec postgres psql -U postgres -d quetz -c 'SHOW max_connections'` → 300.
 7. Check from a workstation (each should print 200), then watch the next CI run or re-run a job:
@@ -183,11 +203,15 @@ in #devops.
     (`ENABLED="true"` in `/etc/default/sysstat`, `sudo systemctl restart sysstat`).
 9. Make lincrosenbach a server maintainer (they're `member` today, so `add-user-roles` skips them):
     `sudo docker compose exec postgres psql -U postgres -d quetz -c "UPDATE users SET role = 'maintainer' WHERE username = 'lincrosenbach'"`.
+10. After about a week without a rollback, delete what only the systemd service used:
+    `/home/users/fred/quetz`, `/home/users/fred/start_quetz.sh`, the conda env
+    `/home/users/fred/mambaforge/envs/quetz`, `/etc/systemd/system/quetz.service` and the old
+    `/home/users/fred/postgres/docker-compose.yml` (not its `data/`: that's the live data dir).
 
 **Rollback:**
 
 ```bash
-cd /home/users/fred/quetz/deploy && sudo docker compose down
+cd /opt/quetz/deploy && sudo docker compose down
 cd /home/users/fred/postgres && sudo docker compose up -d
 # config.toml was never changed, but its database_url still has the old password:
 # put the rotated one there first
@@ -195,4 +219,6 @@ sudo systemctl enable --now quetz
 ```
 
 The old `/home/users/fred/postgres/docker-compose.yml` uses the same data dir, so nothing is
-copied either way.
+copied either way. The systemd service runs from `/home/users/fred/quetz`, which the cutover never
+touched. If the rollback itself fails, restore the step 5 snapshot; it loses whatever was uploaded
+after it.
