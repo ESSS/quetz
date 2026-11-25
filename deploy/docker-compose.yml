@@ -1,0 +1,80 @@
+# Production Quetz + Postgres (packages.esss.com on quetz02). Runbook: deploy/README.md.
+# The repo-root docker-compose.yml is the upstream dev stack; don't use it for production.
+
+name: quetz-prod
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 50m
+    max-file: "5"
+
+services:
+  postgres:
+    image: postgres:18.6-alpine
+    command: ["postgres", "-c", "max_connections=300"]
+    environment:
+      # Applied only by initdb on an empty data dir; an existing cluster keeps its password.
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in deploy/.env}
+      POSTGRES_DB: quetz
+    volumes:
+      # Never point a second Postgres container at this directory while this one runs.
+      - ${PG_DATA_DIR:?set in deploy/.env}:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d quetz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    logging: *logging
+
+  quetz:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        QUETZ_UID: ${QUETZ_UID:-1776201211}
+        QUETZ_GID: ${QUETZ_GID:-1776200513}
+    image: quetz-prod:latest
+    init: true
+    environment:
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:?set in deploy/.env}
+      # Quetz reads the deployment's own config.toml; only the DB moves to the compose network.
+      # An env section replaces the file's [sqlalchemy] section whole, so the pool size (90, as
+      # in the file) is repeated here.
+      QUETZ_SQLALCHEMY_DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/quetz
+      QUETZ_SQLALCHEMY_POSTGRES_POOL_SIZE: "90"
+    volumes:
+      - ${QUETZ_DEPLOYMENT_DIR:?set in deploy/.env}:/quetz-deployment
+      - ${QUETZ_SRC:-..}:/opt/quetz:ro
+    ports:
+      - "${QUETZ_PORT:-8000}:8000"
+    # /health/live is a sync endpoint, so it fails when the AnyIO threadpool is exhausted.
+    # Docker only marks the container unhealthy; deploy/watchdog does the restart.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-m", "10", "-o", "/dev/null", "http://127.0.0.1:8000/health/live"]
+      interval: 30s
+      timeout: 12s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # A runaway Quetz is OOM-killed inside its own cgroup instead of the host's.
+    mem_limit: 5g
+    memswap_limit: 5g
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    cap_add:
+      - SYS_PTRACE  # py-spy dumps from the watchdog
+    stop_grace_period: 30s
+    restart: unless-stopped
+    logging:
+      <<: *logging
+      options:
+        max-size: 50m
+        max-file: "10"

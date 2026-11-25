@@ -1,0 +1,12 @@
+# Build context is the repo root; send only what deploy/Dockerfile copies.
+*
+!deploy/quetz-linux-64.lock
+!setup.py
+!setup.cfg
+!pyproject.toml
+!MANIFEST.in
+!README.md
+!LICENSE
+!quetz
+quetz/**/__pycache__
+quetz/tests
