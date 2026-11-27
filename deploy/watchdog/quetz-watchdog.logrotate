@@ -1,0 +1,8 @@
+/var/log/quetz/stats.csv /var/log/quetz/deepcheck.csv {
+    weekly
+    rotate 12
+    compress
+    delaycompress
+    missingok
+    notifempty
+}

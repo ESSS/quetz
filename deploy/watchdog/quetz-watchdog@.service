@@ -1,0 +1,11 @@
+# %i is the mode: heal or deepcheck (see quetz-watchdog.sh); each has its own timer.
+[Unit]
+Description=Quetz watchdog (%i)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/quetz/deepcheck.env
+ExecStart=/usr/local/sbin/quetz-watchdog %i
+TimeoutStartSec=10min

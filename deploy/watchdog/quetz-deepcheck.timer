@@ -1,0 +1,10 @@
+[Unit]
+Description=Quetz watchdog: repodata deep check, every 5 min
+
+[Timer]
+Unit=quetz-watchdog@deepcheck.service
+OnBootSec=5min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
