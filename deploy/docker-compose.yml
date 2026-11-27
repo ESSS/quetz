@@ -34,6 +34,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+      # The RUN steps use the default bridge, where DNS fails on quetz02.
+      network: host
       args:
         QUETZ_UID: ${QUETZ_UID:-1776201211}
         QUETZ_GID: ${QUETZ_GID:-1776200513}
